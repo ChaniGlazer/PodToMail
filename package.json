@@ -1,7 +1,7 @@
 {
-  "name": "rss-to-drive",
+  "name": "rss-to-drive-oauth",
   "version": "1.0.0",
-  "description": "Download latest 10 files from RSS and upload to Google Drive",
+  "description": "Download latest 10 files from RSS and upload to Google Drive via OAuth2",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
