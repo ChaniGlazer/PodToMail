@@ -4,6 +4,10 @@ const axios = require('axios');
 const Parser = require('rss-parser');
 const { google } = require('googleapis');
 const nodemailer = require('nodemailer');
+const express = require('express');
+
+const app = express();
+const PORT = process.env.PORT || 3000;
 
 // טעינת משתני סביבה כלליים מהמערכת של Render
 const RSS_URL = process.env.RSS_URL;
@@ -15,14 +19,14 @@ const CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 const CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
 const REFRESH_TOKEN = process.env.GOOGLE_REFRESH_TOKEN;
 
-// משתני הסביבה של ה-SMTP שלך מהתמונה
+// משתני הסביבה של ה-SMTP שלך
 const SMTP_HOST = process.env.SMTP_HOST;
 const SMTP_PORT = parseInt(process.env.SMTP_PORT, 10) || 587;
 const SMTP_USER = process.env.SMTP_USER;
 const SMTP_PASS = process.env.SMTP_PASS;
 const SMTP_FROM = process.env.SMTP_FROM;
 
-// המייל שאליו תרצה לקבל את ההתראה (אם זה אותו מייל של ה-FROM, נשתמש ב-SMTP_FROM כברירת מחדל)
+// המייל שאליו תרצה לקבל את ההתראה
 const NOTIFICATION_EMAIL = process.env.NOTIFICATION_EMAIL || SMTP_FROM;
 
 // בדיקה שכל המשתנים הבסיסיים הוגדרו ב-Render
@@ -95,18 +99,16 @@ async function uploadToDrive(fileName, filePath) {
 // פונקציה לשליחת מייל עדכון באמצעות ה-SMTP שלך
 async function sendEmailNotification(uploadedFiles, podcastName) {
     try {
-        // הגדרת הטרנספורט באמצעות שרת ה-SMTP הקיים שלך
         const transporter = nodemailer.createTransport({
             host: SMTP_HOST,
             port: SMTP_PORT,
-            secure: SMTP_PORT === 465, // true עבור פורט 465, false עבור פורטים אחרים כמו 587
+            secure: SMTP_PORT === 465,
             auth: {
                 user: SMTP_USER,
                 pass: SMTP_PASS
             }
         });
 
-        // בניית תוכן ה-HTML של המייל
         let filesHtml = '';
         for (const file of uploadedFiles) {
             filesHtml += `
@@ -131,7 +133,7 @@ async function sendEmailNotification(uploadedFiles, podcastName) {
                         ${filesHtml}
                     </ul>
                     <hr style="border: 0; border-top: 1px solid #e0e0e0; margin: 20px 0;">
-                    <p style="font-size: 12px; color: #9aa0a6; text-align: center; margin-bottom: 0;">הודעה זו נשלחה באופן אוטומטי משרת ה-Cron Job שלך ב-Render.</p>
+                    <p style="font-size: 12px; color: #9aa0a6; text-align: center; margin-bottom: 0;">הודעה זו נשלחה באופן אוטומטי משרת ה-Web Service שלך ב-Render.</p>
                 </div>
             `
         };
@@ -143,79 +145,96 @@ async function sendEmailNotification(uploadedFiles, podcastName) {
     }
 }
 
-async function main() {
-    try {
-        console.log('קורא את ה-RSS...');
-        console.log(`מנסה לגשת לכתובת: "${RSS_URL}"`);
-        const feed = await parser.parseURL(RSS_URL);
-       
+// לוגיקת עיבוד ה-RSS והעלאת הקבצים (הקוד הראשי שלך)
+async function runRssToDriveProcess() {
+    console.log('קורא את ה-RSS...');
+    console.log(`מנסה לגשת לכתובת: "${RSS_URL}"`);
+    const feed = await parser.parseURL(RSS_URL);
 
-        const podcastName = feed.title || 'פודקאסט';
+    const podcastName = feed.title || 'פודקאסט';
+    const items = feed.items.slice(0, DOWNLOAD_COUNT);
+    console.log(`נמצאו ${items.length} פריטים מקסימליים לעיבוד עבור הפודקאסט "${podcastName}".`);
+
+    const uploadedFilesList = [];
+
+    for (let i = 0; i < items.length; i++) {
+        const item = items[i];
         
-        const items = feed.items.slice(0, DOWNLOAD_COUNT);
-        console.log(`נמצאו ${items.length} פריטים מקסימליים לעיבוד עבור הפודקאסט "${podcastName}".`);
-
-        const uploadedFilesList = [];
-
-        for (let i = 0; i < items.length; i++) {
-            const item = items[i];
-            
-            const fileUrl = item.enclosure ? item.enclosure.url : item.link;
-            if (!fileUrl) {
-                console.log(`לא נמצא קובץ להורדה עבור: ${item.title}`);
-                continue;
-            }
-
-            let fileExtension = '.mp3';
-            try {
-                const parsedUrl = new URL(fileUrl);
-                const ext = path.extname(parsedUrl.pathname);
-                if (ext) fileExtension = ext;
-            } catch (e) {}
-
-            const cleanTitle = item.title.replace(/[^a-zA-Z0-9א-ת\s-_]/g, '');
-            const fileName = `${cleanTitle}${fileExtension}`;
-
-            console.log(`[${i + 1}/${items.length}] בודק האם ${fileName} כבר קיים ב-Google Drive...`);
-            const exists = await isFileInDrive(fileName);
-            if (exists) {
-                console.log(`הקובץ "${fileName}" כבר קיים בדרייב. מדלג עליו.`);
-                continue;
-            }
-
-            const localPath = path.join(__dirname, fileName);
-
-            console.log(`[${i + 1}/${items.length}] מוריד: ${fileName}...`);
-            await downloadFile(fileUrl, localPath);
-
-            console.log(`[${i + 1}/${items.length}] מעלה ל-Drive...`);
-            const driveFileId = await uploadToDrive(fileName, localPath);
-
-            if (driveFileId) {
-                uploadedFilesList.push({
-                    name: fileName,
-                    originalUrl: fileUrl,
-                    driveUrl: `https://drive.google.com/open?id=${driveFileId}`
-                });
-            }
-
-            if (fs.existsSync(localPath)) {
-                fs.unlinkSync(localPath);
-            }
+        const fileUrl = item.enclosure ? item.enclosure.url : item.link;
+        if (!fileUrl) {
+            console.log(`לא נמצא קובץ להורדה עבור: ${item.title}`);
+            continue;
         }
 
-        // שליחת מייל רק אם אכן הועלו קבצים חדשים
-        if (uploadedFilesList.length > 0) {
-            console.log(`מכין שליחת מייל עדכון ל-SMTP עבור ${uploadedFilesList.length} קבצים חדשים...`);
-            await sendEmailNotification(uploadedFilesList, podcastName);
-        } else {
-            console.log('לא הועלו קבצים חדשים בריצה זו, אין צורך בשליחת מייל.');
+        let fileExtension = '.mp3';
+        try {
+            const parsedUrl = new URL(fileUrl);
+            const ext = path.extname(parsedUrl.pathname);
+            if (ext) fileExtension = ext;
+        } catch (e) {}
+
+        const cleanTitle = item.title.replace(/[^a-zA-Z0-9א-ת\s-_]/g, '');
+        const fileName = `${cleanTitle}${fileExtension}`;
+
+        console.log(`[${i + 1}/${items.length}] בודק האם ${fileName} כבר קיים ב-Google Drive...`);
+        const exists = await isFileInDrive(fileName);
+        if (exists) {
+            console.log(`הקובץ "${fileName}" כבר קיים בדרייב. מדלג עליו.`);
+            continue;
         }
 
+        const localPath = path.join(__dirname, fileName);
+
+        console.log(`[${i + 1}/${items.length}] מוריד: ${fileName}...`);
+        await downloadFile(fileUrl, localPath);
+
+        console.log(`[${i + 1}/${items.length}] מעלה ל-Drive...`);
+        const driveFileId = await uploadToDrive(fileName, localPath);
+
+        if (driveFileId) {
+            uploadedFilesList.push({
+                name: fileName,
+                originalUrl: fileUrl,
+                driveUrl: `https://drive.google.com/open?id=${driveFileId}`
+            });
+        }
+
+        if (fs.existsSync(localPath)) {
+            fs.unlinkSync(localPath);
+        }
+    }
+
+    // שליחת מייל רק אם אכן הועלו קבצים חדשים
+    if (uploadedFilesList.length > 0) {
+        console.log(`מכין שליחת מייל עדכון ל-SMTP עבור ${uploadedFilesList.length} קבצים חדשים...`);
+        await sendEmailNotification(uploadedFilesList, podcastName);
+    } else {
+        console.log('לא הועלו קבצים חדשים בריצה זו, אין צורך בשליחת מייל.');
+    }
+}
+
+// ---------------- הגדרות שרת Express עבור ה-Web Service החינמי ----------------
+
+// 1. עמוד הבית (נפלא לבדיקה שהשרת באוויר)
+app.get('/', (req, res) => {
+    res.send('שרת ה-RSS ל-Google Drive פועל בהצלחה! כדי להפעיל את הסנכרון, גש לכתובת: /run');
+});
+
+// 2. נקודת הקצה שמפעילה את התהליך
+app.get('/run', async (req, res) => {
+    // החזרת תשובה מיידית לדפדפן כדי למנוע שגיאת Timeout מרנדר בזמן שהקבצים הגדולים יורדים ומעלים
+    res.write('התהליך התחיל ברקע בהצלחה! אנא עקוב אחר ה-Logs ב-Render כדי לראות את ההתקדמות.\n');
+    res.end();
+
+    try {
+        await runRssToDriveProcess();
         console.log('כל התהליך הסתיים בהצלחה!');
     } catch (error) {
         console.error('שגיאה כללית בתהליך:', error.message);
     }
-}
+});
 
-main();
+// הפעלת האזנה לפורט שרנדר מספקת
+app.listen(PORT, () => {
+    console.log(`שרת האינטרנט פעיל ומקשיב בפורט ${PORT}`);
+});
