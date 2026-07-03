@@ -14,7 +14,7 @@ const RSS_URL = process.env.RSS_URL;
 const DRIVE_FOLDER_ID = process.env.DRIVE_FOLDER_ID;
 const DOWNLOAD_COUNT = parseInt(process.env.DOWNLOAD_COUNT, 10) || 10;
 
-// מפתחות הגישה של ה-OAuth ל-Google Drive
+// Mפתחות הגישה של ה-OAuth ל-Google Drive
 const CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 const CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
 const REFRESH_TOKEN = process.env.GOOGLE_REFRESH_TOKEN;
@@ -145,96 +145,99 @@ async function sendEmailNotification(uploadedFiles, podcastName) {
     }
 }
 
-// לוגיקת עיבוד ה-RSS והעלאת הקבצים (הקוד הראשי שלך)
+// לוגיקת עיבוד ה-RSS והעלאת הקבצים
 async function runRssToDriveProcess() {
-    console.log('קורא את ה-RSS...');
-    console.log(`מנסה לגשת לכתובת: "${RSS_URL}"`);
-    const feed = await parser.parseURL(RSS_URL);
+    try {
+        console.log('--- תחילת תהליך סנכרון אוטומטי ---');
+        console.log('קורא את ה-RSS...');
+        console.log(`מנסה לגשת לכתובת: "${RSS_URL}"`);
+        const feed = await parser.parseURL(RSS_URL);
 
-    const podcastName = feed.title || 'פודקאסט';
-    const items = feed.items.slice(0, DOWNLOAD_COUNT);
-    console.log(`נמצאו ${items.length} פריטים מקסימליים לעיבוד עבור הפודקאסט "${podcastName}".`);
+        const podcastName = feed.title || 'פודקאסט';
+        const items = feed.items.slice(0, DOWNLOAD_COUNT);
+        console.log(`נמצאו ${items.length} פריטים מקסימליים לעיבוד עבור הפודקאסט "${podcastName}".`);
 
-    const uploadedFilesList = [];
+        const uploadedFilesList = [];
 
-    for (let i = 0; i < items.length; i++) {
-        const item = items[i];
-        
-        const fileUrl = item.enclosure ? item.enclosure.url : item.link;
-        if (!fileUrl) {
-            console.log(`לא נמצא קובץ להורדה עבור: ${item.title}`);
-            continue;
+        for (let i = 0; i < items.length; i++) {
+            const item = items[i];
+            
+            const fileUrl = item.enclosure ? item.enclosure.url : item.link;
+            if (!fileUrl) {
+                console.log(`לא נמצא קובץ להורדה עבור: ${item.title}`);
+                continue;
+            }
+
+            let fileExtension = '.mp3';
+            try {
+                const parsedUrl = new URL(fileUrl);
+                const ext = path.extname(parsedUrl.pathname);
+                if (ext) fileExtension = ext;
+            } catch (e) {}
+
+            const cleanTitle = item.title.replace(/[^a-zA-Z0-9א-ת\s-_]/g, '');
+            const fileName = `${cleanTitle}${fileExtension}`;
+
+            console.log(`[${i + 1}/${items.length}] בודק האם ${fileName} כבר קיים ב-Google Drive...`);
+            const exists = await isFileInDrive(fileName);
+            if (exists) {
+                console.log(`הקובץ "${fileName}" כבר קיים בדרייב. מדלג עליו.`);
+                continue;
+            }
+
+            const localPath = path.join(__dirname, fileName);
+
+            console.log(`[${i + 1}/${items.length}] מוריד: ${fileName}...`);
+            await downloadFile(fileUrl, localPath);
+
+            console.log(`[${i + 1}/${items.length}] מעלה ל-Drive...`);
+            const driveFileId = await uploadToDrive(fileName, localPath);
+
+            if (driveFileId) {
+                uploadedFilesList.push({
+                    name: fileName,
+                    originalUrl: fileUrl,
+                    driveUrl: `https://drive.google.com/open?id=${driveFileId}`
+                });
+            }
+
+            if (fs.existsSync(localPath)) {
+                fs.unlinkSync(localPath);
+            }
         }
 
-        let fileExtension = '.mp3';
-        try {
-            const parsedUrl = new URL(fileUrl);
-            const ext = path.extname(parsedUrl.pathname);
-            if (ext) fileExtension = ext;
-        } catch (e) {}
-
-        const cleanTitle = item.title.replace(/[^a-zA-Z0-9א-ת\s-_]/g, '');
-        const fileName = `${cleanTitle}${fileExtension}`;
-
-        console.log(`[${i + 1}/${items.length}] בודק האם ${fileName} כבר קיים ב-Google Drive...`);
-        const exists = await isFileInDrive(fileName);
-        if (exists) {
-            console.log(`הקובץ "${fileName}" כבר קיים בדרייב. מדלג עליו.`);
-            continue;
+        // שליחת מייל רק אם אכן הועלו קבצים חדשים
+        if (uploadedFilesList.length > 0) {
+            console.log(`מכין שליחת מייל עדכון ל-SMTP עבור ${uploadedFilesList.length} קבצים חדשים...`);
+            await sendEmailNotification(uploadedFilesList, podcastName);
+        } else {
+            console.log('לא הועלו קבצים חדשים בריצה זו, אין צורך בשליחת מייל.');
         }
 
-        const localPath = path.join(__dirname, fileName);
-
-        console.log(`[${i + 1}/${items.length}] מוריד: ${fileName}...`);
-        await downloadFile(fileUrl, localPath);
-
-        console.log(`[${i + 1}/${items.length}] מעלה ל-Drive...`);
-        const driveFileId = await uploadToDrive(fileName, localPath);
-
-        if (driveFileId) {
-            uploadedFilesList.push({
-                name: fileName,
-                originalUrl: fileUrl,
-                driveUrl: `https://drive.google.com/open?id=${driveFileId}`
-            });
-        }
-
-        if (fs.existsSync(localPath)) {
-            fs.unlinkSync(localPath);
-        }
-    }
-
-    // שליחת מייל רק אם אכן הועלו קבצים חדשים
-    if (uploadedFilesList.length > 0) {
-        console.log(`מכין שליחת מייל עדכון ל-SMTP עבור ${uploadedFilesList.length} קבצים חדשים...`);
-        await sendEmailNotification(uploadedFilesList, podcastName);
-    } else {
-        console.log('לא הועלו קבצים חדשים בריצה זו, אין צורך בשליחת מייל.');
+        console.log('--- תהליך הסנכרון האוטומטי הסתיים בהצלחה! ---');
+    } catch (error) {
+        console.error('שגיאה כללית בתהליך הסנכרון:', error.message);
     }
 }
 
-// ---------------- הגדרות שרת Express עבור ה-Web Service החינמי ----------------
+// ---------------- הגדרות שרת Express ----------------
 
-// 1. עמוד הבית (נפלא לבדיקה שהשרת באוויר)
+// עמוד הבית (נשאר לטובת ה-Port החינמי של Render)
 app.get('/', (req, res) => {
-    res.send('שרת ה-RSS ל-Google Drive פועל בהצלחה! כדי להפעיל את הסנכרון, גש לכתובת: /run');
+    res.send('שרת ה-RSS ל-Google Drive פועל. התהליך מופעל אוטומטית בכל עלייה של השרת.');
 });
 
-// 2. נקודת הקצה שמפעילה את התהליך
+// נקודת קצה ידנית (ליתר ביטחון, אם תרצה להפעיל גם ידנית)
 app.get('/run', async (req, res) => {
-    // החזרת תשובה מיידית לדפדפן כדי למנוע שגיאת Timeout מרנדר בזמן שהקבצים הגדולים יורדים ומעלים
-    res.write('התהליך התחיל ברקע בהצלחה! אנא עקוב אחר ה-Logs ב-Render כדי לראות את ההתקדמות.\n');
+    res.write('הפעלת ידנית את התהליך ברקע...\n');
     res.end();
-
-    try {
-        await runRssToDriveProcess();
-        console.log('כל התהליך הסתיים בהצלחה!');
-    } catch (error) {
-        console.error('שגיאה כללית בתהליך:', error.message);
-    }
+    await runRssToDriveProcess();
 });
 
-// הפעלת האזנה לפורט שרנדר מספקת
-app.listen(PORT, () => {
+// הפעלת האזנה לפורט + הפעלה אוטומטית מיידית של הסנכרון
+app.listen(PORT, async () => {
     console.log(`שרת האינטרנט פעיל ומקשיב בפורט ${PORT}`);
+    
+    // שורה זו מפעילה את התהליך אוטומטית מיד כשהשרת עולה / נבנה מחדש!
+    await runRssToDriveProcess();
 });
