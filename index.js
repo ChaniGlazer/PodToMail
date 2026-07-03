@@ -4,29 +4,25 @@ const axios = require('axios');
 const Parser = require('rss-parser');
 const { google } = require('googleapis');
 const nodemailer = require('nodemailer');
-const express = require('express');
-
-const app = express();
-const PORT = process.env.PORT || 3000;
 
 // טעינת משתני סביבה כלליים מהמערכת של Render
 const RSS_URL = process.env.RSS_URL;
 const DRIVE_FOLDER_ID = process.env.DRIVE_FOLDER_ID;
 const DOWNLOAD_COUNT = parseInt(process.env.DOWNLOAD_COUNT, 10) || 10;
 
-// Mפתחות הגישה של ה-OAuth ל-Google Drive
+// מפתחות הגישה של ה-OAuth ל-Google Drive
 const CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 const CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
 const REFRESH_TOKEN = process.env.GOOGLE_REFRESH_TOKEN;
 
-// משתני הסביבה של ה-SMTP שלך
+// משתני הסביבה של ה-SMTP שלך מהתמונה
 const SMTP_HOST = process.env.SMTP_HOST;
 const SMTP_PORT = parseInt(process.env.SMTP_PORT, 10) || 587;
 const SMTP_USER = process.env.SMTP_USER;
 const SMTP_PASS = process.env.SMTP_PASS;
 const SMTP_FROM = process.env.SMTP_FROM;
 
-// המייל שאליו תרצה לקבל את ההתראה
+// המייל שאליו תרצה לקבל את ההתראה (אם זה אותו מייל של ה-FROM, נשתמש ב-SMTP_FROM כברירת מחדל)
 const NOTIFICATION_EMAIL = process.env.NOTIFICATION_EMAIL || SMTP_FROM;
 
 // בדיקה שכל המשתנים הבסיסיים הוגדרו ב-Render
@@ -99,16 +95,18 @@ async function uploadToDrive(fileName, filePath) {
 // פונקציה לשליחת מייל עדכון באמצעות ה-SMTP שלך
 async function sendEmailNotification(uploadedFiles, podcastName) {
     try {
+        // הגדרת הטרנספורט באמצעות שרת ה-SMTP הקיים שלך
         const transporter = nodemailer.createTransport({
             host: SMTP_HOST,
             port: SMTP_PORT,
-            secure: SMTP_PORT === 465,
+            secure: SMTP_PORT === 465, // true עבור פורט 465, false עבור פורטים אחרים כמו 587
             auth: {
                 user: SMTP_USER,
                 pass: SMTP_PASS
             }
         });
 
+        // בניית תוכן ה-HTML של המייל
         let filesHtml = '';
         for (const file of uploadedFiles) {
             filesHtml += `
@@ -133,7 +131,7 @@ async function sendEmailNotification(uploadedFiles, podcastName) {
                         ${filesHtml}
                     </ul>
                     <hr style="border: 0; border-top: 1px solid #e0e0e0; margin: 20px 0;">
-                    <p style="font-size: 12px; color: #9aa0a6; text-align: center; margin-bottom: 0;">הודעה זו נשלחה באופן אוטומטי משרת ה-Web Service שלך ב-Render.</p>
+                    <p style="font-size: 12px; color: #9aa0a6; text-align: center; margin-bottom: 0;">הודעה זו נשלחה באופן אוטומטי משרת ה-Cron Job שלך ב-Render.</p>
                 </div>
             `
         };
@@ -145,15 +143,15 @@ async function sendEmailNotification(uploadedFiles, podcastName) {
     }
 }
 
-// לוגיקת עיבוד ה-RSS והעלאת הקבצים
-async function runRssToDriveProcess() {
+async function main() {
     try {
-        console.log('--- תחילת תהליך סנכרון אוטומטי ---');
         console.log('קורא את ה-RSS...');
         console.log(`מנסה לגשת לכתובת: "${RSS_URL}"`);
         const feed = await parser.parseURL(RSS_URL);
+       
 
         const podcastName = feed.title || 'פודקאסט';
+        
         const items = feed.items.slice(0, DOWNLOAD_COUNT);
         console.log(`נמצאו ${items.length} פריטים מקסימליים לעיבוד עבור הפודקאסט "${podcastName}".`);
 
@@ -214,30 +212,10 @@ async function runRssToDriveProcess() {
             console.log('לא הועלו קבצים חדשים בריצה זו, אין צורך בשליחת מייל.');
         }
 
-        console.log('--- תהליך הסנכרון האוטומטי הסתיים בהצלחה! ---');
+        console.log('כל התהליך הסתיים בהצלחה!');
     } catch (error) {
-        console.error('שגיאה כללית בתהליך הסנכרון:', error.message);
+        console.error('שגיאה כללית בתהליך:', error.message);
     }
 }
 
-// ---------------- הגדרות שרת Express ----------------
-
-// עמוד הבית (נשאר לטובת ה-Port החינמי של Render)
-app.get('/', (req, res) => {
-    res.send('שרת ה-RSS ל-Google Drive פועל. התהליך מופעל אוטומטית בכל עלייה של השרת.');
-});
-
-// נקודת קצה ידנית (ליתר ביטחון, אם תרצה להפעיל גם ידנית)
-app.get('/run', async (req, res) => {
-    res.write('הפעלת ידנית את התהליך ברקע...\n');
-    res.end();
-    await runRssToDriveProcess();
-});
-
-// הפעלת האזנה לפורט + הפעלה אוטומטית מיידית של הסנכרון
-app.listen(PORT, async () => {
-    console.log(`שרת האינטרנט פעיל ומקשיב בפורט ${PORT}`);
-    
-    // שורה זו מפעילה את התהליך אוטומטית מיד כשהשרת עולה / נבנה מחדש!
-    await runRssToDriveProcess();
-});
+main();
