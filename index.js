@@ -85,7 +85,9 @@ async function uploadToDrive(fileName, filePath) {
 async function main() {
     try {
         console.log('קורא את ה-RSS...');
+        console.log(`מנסה לגשת לכתובת: "${RSS_URL}"`); // שורה חדשה לבדיקה
         const feed = await parser.parseURL(RSS_URL);
+        
         
         // לקיחת כמות הפריטים שהוגדרה במשתנה הסביבה
         const items = feed.items.slice(0, DOWNLOAD_COUNT);
